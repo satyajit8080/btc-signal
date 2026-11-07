@@ -1,0 +1,53 @@
+# Production-style stack: TimescaleDB + Redis + API (x1) + worker (x1) + web.
+# Copy .env.example to .env and set at least BTCS_ADMIN_TOKEN and POSTGRES_PASSWORD.
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_DB: btcsignal
+      POSTGRES_USER: btcsignal
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes: [dbdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U btcsignal"]
+      interval: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+
+  api:
+    build: ./backend
+    env_file: .env
+    environment:
+      BTCS_DATABASE_URL: postgresql+psycopg://btcsignal:${POSTGRES_PASSWORD}@db:5432/btcsignal
+      BTCS_REDIS_URL: redis://redis:6379/0
+      BTCS_RUN_WORKER_IN_API: "false"   # the worker service owns the cycle
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_started }
+    ports: ["8000:8000"]
+
+  worker:
+    build: ./backend
+    command: ["python", "-m", "app.worker"]
+    env_file: .env
+    environment:
+      BTCS_DATABASE_URL: postgresql+psycopg://btcsignal:${POSTGRES_PASSWORD}@db:5432/btcsignal
+      BTCS_REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_started }
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:8000}
+    depends_on: [api]
+    ports: ["3000:3000"]
+
+volumes:
+  dbdata:
